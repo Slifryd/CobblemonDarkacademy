@@ -40,29 +40,34 @@ object TemporaryPartyManagerImpl : TemporaryPartyManager {
     
     // In-memory cache for active sessions (fast lookups)
     private val activeSessions = ConcurrentHashMap<UUID, TemporaryPartyData>()
-    
     override fun saveOriginal(player: ServerPlayer): Boolean {
+        return saveOriginal(player, overwrite = true)
+    }
+
+    fun saveOriginal(player: ServerPlayer, overwrite: Boolean = false): Boolean {
         try {
             // Safety check: prevent double backup
-            if (hasTemporaryParty(player)) {
+            if (hasTemporaryParty(player) && !overwrite) {
                 Cobblemon.LOGGER.warn("Player ${player.name.string} already has a temporary party backup. Refusing to create duplicate.")
                 return false
             }
-            
+
+            // If overwrite, remove previous backup
+            if (overwrite && hasTemporaryParty(player)) {
+                activeSessions.remove(player.uuid)
+                player.removeTag(TAG_HAS_TEMP_PARTY)
+            }
+
             // Clone the player's current party
             val currentParty = player.party().toList()
             if (currentParty.isEmpty()) {
                 Cobblemon.LOGGER.warn("Player ${player.name.string} has empty party, cannot save backup")
                 return false
             }
-            
-            // Create deep copies of Pokémon to ensure no references are shared
-            val clonedParty = currentParty.map { pokemon ->
-                val clone = pokemon.clone()
-                clone
-            }
-            
-            // Create backup data
+
+            // Create deep copies of Pokémon
+            val clonedParty = currentParty.map { it.clone() }
+
             val backupData = TemporaryPartyData(
                 originalParty = clonedParty,
                 rentalParty = emptyList(),
@@ -70,28 +75,23 @@ object TemporaryPartyManagerImpl : TemporaryPartyManager {
                 startTime = Instant.now(),
                 wins = 0
             )
-            
-            // Save to memory
+
             activeSessions[player.uuid] = backupData
-            
-            // Save to persistent storage (NBT on player)
             saveBackupToPlayer(player, backupData)
-            
-            // Mark player as having temp party
             player.addTag(TAG_HAS_TEMP_PARTY)
-            
+
             Cobblemon.LOGGER.info("Successfully backed up party for ${player.name.string} (session: ${backupData.sessionId})")
             return true
-            
+
         } catch (e: Exception) {
             Cobblemon.LOGGER.error("Failed to save original party for ${player.name.string}", e)
-            // Clean up partial state
             activeSessions.remove(player.uuid)
             player.removeTag(TAG_HAS_TEMP_PARTY)
             return false
         }
     }
-    
+
+
     override fun applyTemporary(player: ServerPlayer, rentalTeam: List<Pokemon>): Boolean {
         try {
             // Safety check: ensure backup exists
@@ -276,7 +276,7 @@ object TemporaryPartyManagerImpl : TemporaryPartyManager {
     /**
      * Clears backup data from the player's custom storage.
      */
-    private fun clearBackupFromPlayer(player: ServerPlayer) {
+    fun clearBackupFromPlayer(player: ServerPlayer) {
         try {
             val dataFile = getPlayerDataFile(player)
             if (dataFile.exists()) {

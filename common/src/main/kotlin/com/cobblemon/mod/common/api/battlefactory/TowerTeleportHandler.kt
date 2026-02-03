@@ -30,26 +30,27 @@ object TowerTeleportHandler {
     /**
      * Teleports a player to the current arena in their session.
      */
-    fun teleportToArena(player: ServerPlayer, session: TowerSession) {
+    fun teleportToArena(player: ServerPlayer, session: TowerSession): Boolean {
+        return try {
         val config = BattleFactoryTowerManager.getConfig()
         val arena = config.getArena(session.currentArena)
-        
+
         if (arena == null) {
             Cobblemon.LOGGER.error("Arena ${session.currentArena} not found in config!")
-            return
+            return false
         }
-        
+
         // Get world
         val worldKey = ResourceKey.create(
             net.minecraft.core.registries.Registries.DIMENSION,
             ResourceLocation.parse(arena.world)
         )
         val world = player.server.getLevel(worldKey)
-        
+
         if (world == null) {
             Cobblemon.LOGGER.error("World ${arena.world} not found!")
             player.sendSystemMessage(net.minecraft.network.chat.Component.literal("§cError: Arena world not loaded"))
-            return
+            return false
         }
         
         // Teleport player
@@ -67,8 +68,12 @@ object TowerTeleportHandler {
         player.sendSystemMessage(net.minecraft.network.chat.Component.literal("§6Arena ${session.getCurrentArenaDisplay()}/7§r"))
         player.sendSystemMessage(net.minecraft.network.chat.Component.literal("§e${arena.name}"))
         
-        // TODO: Phase 4 - Spawn trainer NPC
-        // TowerTrainerSpawner.spawnTrainer(world, arena, session.difficulty, session.currentArena)
+        true
+        } catch (e: Exception) {
+            Cobblemon.LOGGER.error("Teleport failed for ${player.name.string}", e)
+            false
+        }
+
     }
     
     /**

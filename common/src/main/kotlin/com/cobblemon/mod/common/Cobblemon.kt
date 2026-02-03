@@ -127,6 +127,8 @@ import kotlin.properties.Delegates
 import kotlin.reflect.full.memberProperties
 import kotlin.reflect.jvm.isAccessible
 import kotlin.reflect.jvm.javaField
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
+
 
 object Cobblemon {
     const val MODID = CobblemonBuildDetails.MOD_ID
@@ -457,6 +459,7 @@ object Cobblemon {
     }
 
     fun registerEventHandlers() {
+
         AdvancementHandler.registerListeners()
         PokedexHandler.registerListeners()
         StatHandler.registerListeners()
@@ -477,6 +480,10 @@ object Cobblemon {
             displayName = net.minecraft.network.chat.Component.literal("Tower Battle"),
             clazz = com.cobblemon.mod.common.api.battlefactory.TowerBattleInteraction::class.java
         )
+        //safety secure pokemon on restart/crash
+        ServerLifecycleEvents.SERVER_STARTED.register { server ->
+            com.cobblemon.mod.common.api.battlefactory.BattleFactoryTowerManager.resetAllPlayers(server)
+        }
 
     }
 

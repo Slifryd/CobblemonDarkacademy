@@ -39,6 +39,7 @@ dependencies {
     implementation(libs.bundles.kotlin)
     modImplementation(libs.fabric.loader)
     modApi(libs.molang)
+    modImplementation(libs.fabric.api)
 
     // Integrations
     compileOnlyApi(libs.jei.api)

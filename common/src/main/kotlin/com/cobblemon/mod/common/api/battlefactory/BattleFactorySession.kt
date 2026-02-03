@@ -114,19 +114,18 @@ class BattleFactorySession(
                 BattleFactoryRewards.giveRewards(player, wins)
             }
             
-            // Restore original party
-            if (!TemporaryPartyManagerImpl.restore(player, force = true)) {
-                Cobblemon.LOGGER.error("CRITICAL: Failed to restore party for ${player.name.string} at session end")
-            } else {
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal("§aYour original party has been restored."))
-            }
+            /// Restore original party and clear cache and remove session
+            BattleFactoryTowerManager.reset(player)
+            player.sendSystemMessage(
+                net.minecraft.network.chat.Component.literal("§aYour original party has been restored.")
+            )
+            Cobblemon.LOGGER.info("Original party restored for ${player.name.string} at session end")
+
         }
         
-        // Mark session as inactive
-        active = false
+
         
-        // Remove from session manager
-        FacilitySessionManager.endSession(playerUUID)
+
         
         Cobblemon.LOGGER.info("Ended Battle Factory session for player $playerUUID (wins: $wins, rewards: $giveRewards)")
     }

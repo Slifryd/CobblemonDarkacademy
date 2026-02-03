@@ -28,11 +28,13 @@ class OpenTowerSelectionPacket(
     
     companion object {
         val ID = cobblemonResource("open_tower_selection")
-        
+
         fun decode(buffer: net.minecraft.network.FriendlyByteBuf): OpenTowerSelectionPacket {
             val registryBuffer = buffer as RegistryFriendlyByteBuf
             return OpenTowerSelectionPacket(
-                offeredPokemon = registryBuffer.readList { TowerPokemonDTO.decode(it as RegistryFriendlyByteBuf) },
+                offeredPokemon = registryBuffer.readCollection({ mutableListOf() }) {
+                    TowerPokemonDTO.decode(it as RegistryFriendlyByteBuf)
+                },
                 difficulty = registryBuffer.readUtf()
             )
         }

@@ -11,6 +11,8 @@ package com.cobblemon.mod.common.api.battlefactory
 import com.cobblemon.mod.common.Cobblemon
 import com.cobblemon.mod.common.api.events.CobblemonEvents
 import com.cobblemon.mod.common.platform.events.PlatformEvents
+import net.minecraft.server.level.ServerPlayer
+
 
 /**
  * Event handler for Battle Factory system.
@@ -87,19 +89,30 @@ object BattleFactoryEventHandler {
             if (BattleFactoryTowerManager.hasActiveSession(event.player)) {
                 BattleFactoryTowerManager.onArenaDefeat(event.player)
             }
-            TemporaryPartyManagerImpl.onPlayerLogout(event.player)
+            TemporaryPartyManagerImpl.restore(event.player, force = true)
         }
         
         // Hook 2: Player death → force restore
         PlatformEvents.PLAYER_DEATH.subscribe { event ->
-            TemporaryPartyManagerImpl.onPlayerDeath(event.player)
+            TemporaryPartyManagerImpl.restore(event.player, force = true)
         }
         
         // Hook 3: Player login → check for orphaned backups
-        PlatformEvents.SERVER_PLAYER_LOGIN.subscribe { event ->
-            TemporaryPartyManagerImpl.onPlayerLogin(event.player)
+        CobblemonEvents.DATA_SYNCHRONIZED.subscribe { player ->
+            Cobblemon.LOGGER.info("[TOWER DEBUG] DATA_SYNCHRONIZED for ${player.name.string}")
+
+            val result = TemporaryPartyManagerImpl.restore(player, force = true)
+
+            player.sendSystemMessage(
+                net.minecraft.network.chat.Component.literal(
+                    "§6[TOWER DEBUG] restore(force=true) = $result"
+                )
+            )
         }
-        
+
+
+
+
         // Hook 4: Battle victory → session.onWin() OR tower.onArenaVictory()
         CobblemonEvents.BATTLE_VICTORY.subscribe { event ->
             val winners = event.winners
@@ -186,7 +199,11 @@ object BattleFactoryEventHandler {
                 }
             }
         }
-        
+        PlatformEvents.SERVER_STARTED.subscribe { event ->
+            BattleFactoryTowerManager.resetAllPlayers(event.server)
+        }
+
+
         initialized = true
         Cobblemon.LOGGER.info("Battle Factory event handlers registered successfully")
     }

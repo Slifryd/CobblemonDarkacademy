@@ -89,11 +89,25 @@ object BattleFactoryTowerManager {
     fun getConfig(): BattleFactoryTowerConfig {
         return config ?: throw IllegalStateException("Battle Factory Tower config not loaded!")
     }
-    
+    /**
+     * Reset all player security
+     */
+    fun resetAllPlayers(server: net.minecraft.server.MinecraftServer) {
+        server.playerList.players.forEach { player ->
+            TemporaryPartyManagerImpl.restore(player, force = true)
+            activeSessions.remove(player.uuid)
+            TowerPokemonCache.remove(player.uuid)
+
+            Cobblemon.LOGGER.info("Tower reset for ${player.name.string}")
+        }
+    }
+
+
     /**
      * Checks if a player has an active tower session.
      */
     fun hasActiveSession(player: ServerPlayer): Boolean {
+
         return activeSessions.containsKey(player.uuid)
     }
     
@@ -115,10 +129,26 @@ object BattleFactoryTowerManager {
      * Starts a tower session for a player.
      * This opens the Pokemon selection UI.
      */
+    fun reset(player: ServerPlayer){
+        // Restore original party
+        TemporaryPartyManagerImpl.restore(player, force = true)
+
+        // Remove session
+        activeSessions.remove(player.uuid)
+
+        //clear cache
+        TowerPokemonCache.remove(player.uuid)
+        TemporaryPartyManagerImpl.clearBackupFromPlayer(player)
+    }
     fun startTower(player: ServerPlayer, difficulty: TowerDifficulty) {
         // Check if already has session
         if (hasActiveSession(player)) {
             player.sendSystemMessage(net.minecraft.network.chat.Component.literal("§cYou already have an active tower session!"))
+            // Restore original party
+            TemporaryPartyManagerImpl.restore(player, force = true)
+
+            // Remove session
+            activeSessions.remove(player.uuid)
             return
         }
         
@@ -164,6 +194,7 @@ object BattleFactoryTowerManager {
      * Callback when player confirms Pokemon selection.
      */
     fun onPokemonSelected(player: ServerPlayer, difficulty: TowerDifficulty, selectedPokemon: List<Pokemon>) {
+
         // PREVENT DOUBLE SPAWN: Check if session already exists (race condition from spamming UI)
         if (hasActiveSession(player)) {
             Cobblemon.LOGGER.warn("Ignoring duplicate onPokemonSelected for ${player.name.string} - session already active")
@@ -181,7 +212,18 @@ object BattleFactoryTowerManager {
             difficulty = difficulty,
             selectedPokemon = selectedPokemon
         )
-        
+        // PREVENT DUPLICATE BACKUP
+        BattleFactoryTowerManager.reset(player)
+
+        if (!TemporaryPartyManagerImpl.saveOriginal(player)) {
+            Cobblemon.LOGGER.error("Failed to backup party for tower session")
+            TemporaryPartyManagerImpl.restore(player, force = true)
+            activeSessions.remove(player.uuid)
+            TowerPokemonCache.remove(player.uuid)
+
+            return
+        }
+
         activeSessions[player.uuid] = session
         
         // Backup original party and apply selected Pokémon
@@ -197,9 +239,17 @@ object BattleFactoryTowerManager {
             activeSessions.remove(player.uuid)
             return
         }
-        
+
         // Teleport to first arena
-        TowerTeleportHandler.teleportToArena(player, session)
+        val ok = TowerTeleportHandler.teleportToArena(player, session)
+        if (!ok) {
+            TemporaryPartyManagerImpl.restore(player, force = true)
+            activeSessions.remove(player.uuid)
+
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal("§cErreur lors du lancement du combat."))
+
+            return
+        }
         
         // Spawn the trainer NPC for this arena
         val config = getConfig()
