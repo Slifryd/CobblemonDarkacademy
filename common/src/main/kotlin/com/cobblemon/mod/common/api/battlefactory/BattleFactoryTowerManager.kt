@@ -297,7 +297,7 @@ object BattleFactoryTowerManager {
                  Cobblemon.LOGGER.error("No arena configured for index $arenaIndex")
                  return
             }
-            
+            partyStore.heal()
             val npc = TowerTrainerSpawner.spawnTrainer(player.serverLevel(), arena, session.difficulty, session.currentArena + 1, player.uuid)
             session.currentTrainerNPC = npc?.uuid
             

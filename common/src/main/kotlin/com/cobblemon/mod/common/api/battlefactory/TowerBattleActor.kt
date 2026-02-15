@@ -13,7 +13,6 @@ import com.cobblemon.mod.common.api.net.NetworkPacket
 import com.cobblemon.mod.common.battles.pokemon.BattlePokemon
 import com.cobblemon.mod.common.entity.npc.NPCBattleActor
 import com.cobblemon.mod.common.entity.npc.NPCEntity
-import com.cobblemon.mod.common.net.messages.client.battle.BattleMakeChoicePacket
 import com.cobblemon.mod.common.net.messages.client.battle.BattleQueueRequestPacket
 
 /**
@@ -25,165 +24,223 @@ class TowerBattleActor(
     pokemonList: List<BattlePokemon>,
     skill: Int
 ) : NPCBattleActor(npc, pokemonList, skill) {
-    
-    // Override initialPos to ensure a safe, elevated position for sending out Pokémon.
-    // This prevents potential raycast failures if the NPC is spawned exactly on the ground or inside a block.
+
     override val initialPos = npc.position().add(0.0, 0.2, 0.0).add(npc.lookAngle.scale(2.0))
 
     private var sendingOutStartTime: Long = 0L
+    private var lastRequestTurn: Int = -1
+    private var requestRetryCount: Int = 0
 
     init {
         npc.addTag("TowerDebug")
         Cobblemon.LOGGER.info("[TOWER DEBUG] Tagged NPC ${npc.uuid} for debug logging.")
     }
 
-
-
-    override fun sendUpdate(packet: NetworkPacket<*>) {
-        super.sendUpdate(packet)
-        
-        // Debug logging to trace packet flow
-        if (packet is BattleQueueRequestPacket) {
-            Cobblemon.LOGGER.info("[TOWER DEBUG] BattleQueueRequestPacket received. Turn: ${battle.turn}")
-            
-            // 1. ANIMATION BLOCK CHECK (Smart Wait)
-            if (stillSendingOutCount > 0) {
-                if (sendingOutStartTime == 0L) {
-                    sendingOutStartTime = System.currentTimeMillis()
+    /**
+     * Syncs health from Showdown request to local Pokemon
+     */
+    private fun syncHealthFromRequest() {
+        request?.side?.pokemon?.forEach { showdownPokemon ->
+            val localPokemon = pokemonList.find { it.uuid == showdownPokemon.uuid }
+            if (localPokemon != null) {
+                val conditionParts = showdownPokemon.condition.split(" ")
+                val isFainted = conditionParts.contains("fnt") || conditionParts[0] == "0"
+                val showdownHealth = if (isFainted) {
+                    0
+                } else {
+                    conditionParts[0].split("/").getOrNull(0)?.toIntOrNull() ?: localPokemon.health
                 }
-                
-                val elapsed = System.currentTimeMillis() - sendingOutStartTime
-                 Cobblemon.LOGGER.info("[TOWER DEBUG] Actor is animating ($stillSendingOutCount). Waiting naturally... (Elapsed: ${elapsed}ms)")
-                 // IMPORTANT: We ignore the request here to let the animation finish naturally.
-                 // The Battle Dispatcher/Instructions will handle the flow once the future completes.
-                 // A separate Watchdog (in BattleFactoryEventHandler) will handle timeouts.
-                 return
-            } else {
-                sendingOutStartTime = 0L
-            }
 
-            // 2. STATE RECONCILIATION
-            // Only examine packets meant for THIS actor's side
-            val requestSideId = packet.request.side?.id
-            val mySideId = if (getSide() == battle.side1) "p1" else "p2"
-            
-            // Showdown side IDs often look like "p1" or "p2". 
-            // We need to ensure we are only validating our own state.
-            if (requestSideId != null && requestSideId != mySideId) {
-                 return
-            }
-
-            val requestActiveUUIDs = packet.request.side?.pokemon?.filter { it.active }?.map { it.uuid } ?: emptyList()
-            if (requestActiveUUIDs.isNotEmpty()) {
-                val expectedUUID = requestActiveUUIDs.first()
-                val currentUUID = activePokemon.firstOrNull()?.battlePokemon?.uuid
-                
-                // Note: currentUUID can be null during Turn 0 initialization before InitializeInstruction finishes.
-                // Or if a pokemon fainted and the replacement hasn't arrived/spawned yet.
-                if (currentUUID == null && battle.turn == 0) {
-                     Cobblemon.LOGGER.info("[TOWER DEBUG] Active Pokemon is null (Turn ${battle.turn}). Assuming Initialization race condition. Ignoring.")
-                     return
-                }
-                
-                if (expectedUUID != currentUUID) {
-                    Cobblemon.LOGGER.warn("[TOWER DEBUG] DESYNC DETECTED! Showdown expects $expectedUUID but we have $currentUUID")
-                    
-                    val correctPokemon = pokemonList.find { it.uuid == expectedUUID }
-                    if (correctPokemon != null) {
-                        Cobblemon.LOGGER.info("[TOWER DEBUG] Reconciling Desync: Force-swapping to ${correctPokemon.originalPokemon.species.name}")
-                        
-                        // Cleanup Old
-                        activePokemon.firstOrNull()?.battlePokemon?.entity?.let { oldEntity ->
-                            oldEntity.discard()
-                            oldEntity.remove(net.minecraft.world.entity.Entity.RemovalReason.DISCARDED)
-                        }
-
-                        // Assign New
-                        if (activePokemon.isNotEmpty()) {
-                            activePokemon[0].battlePokemon = correctPokemon
-                        } else {
-                             Cobblemon.LOGGER.error("[TOWER DEBUG] Active Pokemon List is EMPTY! Cannot assign new pokemon.")
-                        }
-
-                        // Cleanup Broken New
-                        correctPokemon.entity?.let { brokenEntity ->
-                             brokenEntity.discard()
-                        }
-                        
-                        // Force Spawn
-                        if (npc.level() is net.minecraft.server.level.ServerLevel) {
-                             val spawnPos = initialPos.add(npc.lookAngle.scale(2.0))
-                             val spawnedEntity = correctPokemon.originalPokemon.sendOut(
-                                 npc.level() as net.minecraft.server.level.ServerLevel,
-                                 spawnPos,
-                                 null
-                             )
-                             spawnedEntity?.battleId = battle.battleId
-                        }
-                        
-                        // Force Network Sync
-                        try {
-                             val sideIndex = battle.actors.indexOf(this) + 1
-                             val pnx = "p${sideIndex}a"
-                             battle.sendSidedUpdate(
-                                 this, 
-                                 com.cobblemon.mod.common.net.messages.client.battle.BattleSwitchPokemonPacket(pnx, correctPokemon, true, null), 
-                                 com.cobblemon.mod.common.net.messages.client.battle.BattleSwitchPokemonPacket(pnx, correctPokemon, false, null)
-                             )
-                             correctPokemon.sendUpdate()
-                             val message = com.cobblemon.mod.common.util.battleLang("switch.other", this.getName(), correctPokemon.effectedPokemon.getDisplayName(true))
-                             battle.actors.forEach { it.sendMessage(message) }
-                             
-                             // Trigger AI if needed because we missed the natural trigger
-                             mustChoose = true 
-                             onChoiceRequested() 
-                             
-                        } catch (e: Exception) {
-                             Cobblemon.LOGGER.error("[TOWER DEBUG] Failed to sync network: ${e.message}")
-                        }
-
-                        battle.dispatchResult = com.cobblemon.mod.common.battles.dispatch.GO
-                    }
+                if (showdownHealth != localPokemon.health) {
+                    Cobblemon.LOGGER.warn("[TOWER DEBUG] Health sync: ${showdownPokemon.ident} -> $showdownHealth HP (was ${localPokemon.health})")
+                    localPokemon.effectedPokemon.currentHealth = showdownHealth
                 }
             }
         }
     }
 
     /**
-     * Called every server tick to check if the actor is stuck in an animation state.
-     * If stuck for > 5 seconds, forces an unblock/spawn.
+     * Intercept when choice is requested to sync health BEFORE AI makes decisions
      */
+    override fun onChoiceRequested() {
+        Cobblemon.LOGGER.info("[TOWER DEBUG] onChoiceRequested called for turn ${battle.turn}")
+
+        // Track if this is a retry (same turn, multiple requests)
+        if (battle.turn == lastRequestTurn) {
+            requestRetryCount++
+            Cobblemon.LOGGER.warn("[TOWER DEBUG] This is retry #$requestRetryCount for turn ${battle.turn}")
+        } else {
+            lastRequestTurn = battle.turn
+            requestRetryCount = 0
+        }
+
+        // Sync health before AI decision
+        syncHealthFromRequest()
+
+        // Log available Pokemon before decision
+        Cobblemon.LOGGER.info("[TOWER DEBUG] Available Pokemon for switch:")
+        pokemonList.forEachIndexed { index, pokemon ->
+            val showdownData = request?.side?.pokemon?.find { it.uuid == pokemon.uuid }
+            val isInActivePokemon = activePokemon.any { it.battlePokemon?.uuid == pokemon.uuid }
+            Cobblemon.LOGGER.info("[TOWER DEBUG]   [$index] ${pokemon.effectedPokemon.species.name}: HP=${pokemon.health}, Showdown=${showdownData?.condition ?: "N/A"}, ShowdownActive=${showdownData?.active ?: false}, InActiveList=$isInActivePokemon")
+        }
+
+        // If this is a retry and we only have dead Pokemon left, end the battle
+        if (requestRetryCount > 2) {
+            val allDead = pokemonList.all { it.health <= 0 }
+            if (allDead) {
+                Cobblemon.LOGGER.error("[TOWER DEBUG] All Pokemon dead after multiple retries - ending battle")
+                battle.end()
+                val playerActor = battle.actors.filterIsInstance<com.cobblemon.mod.common.battles.actor.PlayerBattleActor>().firstOrNull()
+                playerActor?.entity?.let { player ->
+                    BattleFactoryTowerManager.onArenaVictory(player)
+                }
+                return
+            }
+        }
+
+        // Now let the parent class make decisions with correct health values
+        super.onChoiceRequested()
+    }
+
+    override fun sendUpdate(packet: NetworkPacket<*>) {
+        // CRITICAL: Sync health FIRST before calling super.sendUpdate which triggers onChoiceRequested
+        if (packet is BattleQueueRequestPacket) {
+            val requestSideId = packet.request.side?.id
+            val mySideId = if (getSide() == battle.side1) "p1" else "p2"
+
+            if (requestSideId == mySideId) {
+                // Sync health BEFORE anything else
+                packet.request.side?.pokemon?.forEach { showdownPokemon ->
+                    val localPokemon = pokemonList.find { it.uuid == showdownPokemon.uuid }
+                    if (localPokemon != null) {
+                        val conditionParts = showdownPokemon.condition.split(" ")
+                        val isFainted = conditionParts.contains("fnt") || conditionParts[0] == "0"
+                        val showdownHealth = if (isFainted) {
+                            0
+                        } else {
+                            conditionParts[0].split("/").getOrNull(0)?.toIntOrNull() ?: localPokemon.health
+                        }
+
+                        if (showdownHealth != localPokemon.health) {
+                            Cobblemon.LOGGER.warn("[TOWER DEBUG] Pre-sendUpdate health sync: ${showdownPokemon.ident} -> $showdownHealth HP")
+                            localPokemon.effectedPokemon.currentHealth = showdownHealth
+                        }
+                    }
+                }
+            }
+        }
+
+        super.sendUpdate(packet)
+
+        if (packet !is BattleQueueRequestPacket) return
+
+        Cobblemon.LOGGER.info("[TOWER DEBUG] BattleQueueRequestPacket received. Turn: ${battle.turn}")
+
+        val requestSideId = packet.request.side?.id
+        val mySideId = if (getSide() == battle.side1) "p1" else "p2"
+        if (requestSideId != mySideId) return
+
+        val requestActiveUUIDs = packet.request.side?.pokemon
+            ?.filter { it.active }
+            ?.map { it.uuid }
+            ?: emptyList()
+
+        if (requestActiveUUIDs.isEmpty()) return
+
+        val expectedUUID = requestActiveUUIDs.first()
+        val currentUUID = activePokemon.firstOrNull()?.battlePokemon?.uuid
+
+        if (currentUUID == null && battle.turn == 0) return
+
+        if (expectedUUID != currentUUID) {
+            Cobblemon.LOGGER.warn("[TOWER DEBUG] DESYNC DETECTED! Showdown expects $expectedUUID but we have $currentUUID")
+
+            var repaired = false
+
+            try {
+                val correctPokemon = pokemonList.find { it.uuid == expectedUUID }
+
+                if (correctPokemon != null) {
+                    // cleanup old
+                    activePokemon.firstOrNull()?.battlePokemon?.entity?.discard()
+
+                    if (activePokemon.isNotEmpty()) {
+                        activePokemon[0].battlePokemon = correctPokemon
+                    }
+
+                    correctPokemon.entity?.discard()
+
+                    if (npc.level() is net.minecraft.server.level.ServerLevel) {
+                        val spawnPos = initialPos.add(npc.lookAngle.scale(2.0))
+                        val spawned = correctPokemon.originalPokemon.sendOut(
+                            npc.level() as net.minecraft.server.level.ServerLevel,
+                            spawnPos,
+                            null
+                        )
+                        spawned?.battleId = battle.battleId
+                    }
+
+                    val sideIndex = battle.actors.indexOf(this) + 1
+                    val pnx = "p${sideIndex}a"
+
+                    battle.sendSidedUpdate(
+                        this,
+                        com.cobblemon.mod.common.net.messages.client.battle.BattleSwitchPokemonPacket(pnx, correctPokemon, true, null),
+                        com.cobblemon.mod.common.net.messages.client.battle.BattleSwitchPokemonPacket(pnx, correctPokemon, false, null)
+                    )
+
+                    correctPokemon.sendUpdate()
+                    mustChoose = true
+                    onChoiceRequested()
+
+                    val newCurrent = activePokemon.firstOrNull()?.battlePokemon?.uuid
+                    if (newCurrent == expectedUUID) {
+                        Cobblemon.LOGGER.info("[TOWER DEBUG] Desync successfully repaired.")
+                        repaired = true
+                    }
+                }
+            } catch (e: Exception) {
+                Cobblemon.LOGGER.error("[TOWER DEBUG] Exception during resync: ${e.message}")
+            }
+
+            if (!repaired) {
+                Cobblemon.LOGGER.error("[TOWER DEBUG] UNRECOVERABLE DESYNC -> Forcing battle end")
+                battle.end()
+                val playerActor = battle.actors.filterIsInstance<com.cobblemon.mod.common.battles.actor.PlayerBattleActor>().firstOrNull()
+                playerActor?.entity?.let { player ->
+                    BattleFactoryTowerManager.onArenaVictory(player)
+                }
+                return
+            }
+
+            battle.dispatchResult = com.cobblemon.mod.common.battles.dispatch.GO
+        }
+    }
+
     fun checkWatchdog() {
         if (stillSendingOutCount > 0 && sendingOutStartTime != 0L) {
             val elapsed = System.currentTimeMillis() - sendingOutStartTime
             if (elapsed > 5000) {
                 Cobblemon.LOGGER.error("[TOWER WATCHDOG] Actor stuck for ${elapsed}ms. Forcing recovery...")
-                
-                // Reset state
+
                 stillSendingOutCount = 0
                 sendingOutStartTime = 0L
-                
-                // Force Spawn current active pokemon if missing
+
                 val currentPkm = activePokemon.firstOrNull()?.battlePokemon
-                if (currentPkm != null) {
-                    val existingEntity = currentPkm.entity
-                    if (existingEntity == null || !existingEntity.isAlive) {
-                         Cobblemon.LOGGER.warn("[TOWER WATCHDOG] Forcing spawn of ${currentPkm.originalPokemon.species.name}...")
-                         if (npc.level() is net.minecraft.server.level.ServerLevel) {
-                             val spawnPos = initialPos.add(npc.lookAngle.scale(2.0))
-                             val spawnedEntity = currentPkm.originalPokemon.sendOut(
-                                 npc.level() as net.minecraft.server.level.ServerLevel,
-                                 spawnPos,
-                                 null
-                             )
-                             spawnedEntity?.battleId = battle.battleId
-                         }
+                if (currentPkm != null && (currentPkm.entity == null || !currentPkm.entity!!.isAlive)) {
+                    if (npc.level() is net.minecraft.server.level.ServerLevel) {
+                        val spawnPos = initialPos.add(npc.lookAngle.scale(2.0))
+                        val spawned = currentPkm.originalPokemon.sendOut(
+                            npc.level() as net.minecraft.server.level.ServerLevel,
+                            spawnPos,
+                            null
+                        )
+                        spawned?.battleId = battle.battleId
                     }
                 }
-                
-                // Force unblock dispatcher
+
                 battle.dispatchResult = com.cobblemon.mod.common.battles.dispatch.GO
-                Cobblemon.LOGGER.info("[TOWER WATCHDOG] Recovery complete.")
             }
         }
     }

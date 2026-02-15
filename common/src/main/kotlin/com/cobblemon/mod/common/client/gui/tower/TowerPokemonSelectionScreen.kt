@@ -33,9 +33,9 @@ import net.minecraft.network.chat.Component
 
 /**
  * Client-side GUI for Tower Pokemon selection.
- * 
+ *
  * Displays 6 Pokemon in a grid (3x2) and allows the player to select exactly 3.
- * 
+ *
  * @author Cobblemon Contributors
  * @since January 2026
  */
@@ -43,38 +43,38 @@ class TowerPokemonSelectionScreen(
     private val offeredPokemon: List<TowerPokemonDTO>,
     private val difficulty: String
 ) : Screen(lang("ui.tower.selection.title")) {
-    
+
     companion object {
         private const val BASE_WIDTH = 256
         private const val BASE_HEIGHT = 180
-        
+
         private val background = cobblemonResource("textures/gui/pc/pc_select.png")
-        
+
         private const val SLOT_SIZE = 60
         private const val SLOT_SPACING = 10
     }
-    
+
     private val selectedIndices = mutableSetOf<Int>()
     private val pokemonWidgets = mutableListOf<PokemonSlotWidget>()
     private lateinit var confirmButton: Button
-    
+
     override fun init() {
         super.init()
-        
+
         val centerX = width / 2
         val centerY = height / 2
-        
+
         // Create grid: 3 columns x 2 rows
         val startX = centerX - (3 * SLOT_SIZE + 2 * SLOT_SPACING) / 2
         val startY = centerY - (2 * SLOT_SIZE + SLOT_SPACING) / 2 - 10
-        
+
         offeredPokemon.forEachIndexed { index, pokemonDTO ->
             val col = index % 3
             val row = index / 3
-            
+
             val x = startX + col * (SLOT_SIZE + SLOT_SPACING)
             val y = startY + row * (SLOT_SIZE + SLOT_SPACING)
-            
+
             val widget = PokemonSlotWidget(
                 x = x,
                 y = y,
@@ -82,11 +82,11 @@ class TowerPokemonSelectionScreen(
                 index = index,
                 onSelect = { idx -> toggleSelection(idx) }
             )
-            
+
             pokemonWidgets.add(widget)
             addRenderableWidget(widget)
         }
-        
+
         // Confirm button
         confirmButton = Button.builder(
             lang("ui.tower.selection.confirm"),
@@ -94,11 +94,11 @@ class TowerPokemonSelectionScreen(
         )
             .bounds(centerX - 40, centerY + SLOT_SIZE + 30, 80, 20)
             .build()
-        
+
         addRenderableWidget(confirmButton)
         updateConfirmButton()
     }
-    
+
     private fun toggleSelection(index: Int) {
         if (selectedIndices.contains(index)) {
             selectedIndices.remove(index)
@@ -114,22 +114,22 @@ class TowerPokemonSelectionScreen(
                 return
             }
         }
-        
+
         // Play sound
         minecraft?.soundManager?.play(SimpleSoundInstance.forUI(CobblemonSounds.GUI_CLICK, 1.0F))
-        
+
         // Update widgets
         pokemonWidgets.forEach { it.updateSelection(selectedIndices) }
         updateConfirmButton()
     }
-    
+
     private fun updateConfirmButton() {
         confirmButton.active = selectedIndices.size == 3
     }
-    
+
     private fun confirm() {
         if (selectedIndices.size != 3) return
-        
+
         // Send packet to server
         CobblemonNetwork.sendToServer(
             TowerPokemonSelectionPacket(
@@ -137,16 +137,16 @@ class TowerPokemonSelectionScreen(
                 difficulty = difficulty
             )
         )
-        
+
         // Close screen
         minecraft?.setScreen(null)
     }
-    
+
     override fun render(context: GuiGraphics, mouseX: Int, mouseY: Int, delta: Float) {
         renderBackground(context, mouseX, mouseY, delta)
-        
+
         val matrices = context.pose()
-        
+
         // Title
         drawScaledText(
             context = context,
@@ -158,7 +158,7 @@ class TowerPokemonSelectionScreen(
             scale = 1.5F,
             shadow = true
         )
-        
+
         // Subtitle
         drawScaledText(
             context = context,
@@ -169,12 +169,12 @@ class TowerPokemonSelectionScreen(
             scale = 0.8F,
             shadow = true
         )
-        
+
         super.render(context, mouseX, mouseY, delta)
     }
-    
+
     override fun isPauseScreen() = true
-    
+
     /**
      * Widget for a single Pokemon slot.
      */
@@ -185,29 +185,25 @@ class TowerPokemonSelectionScreen(
         private val index: Int,
         private val onSelect: (Int) -> Unit
     ) : AbstractWidget(x, y, SLOT_SIZE, SLOT_SIZE, Component.empty()) {
-        
+
         private var isSelected = false
         private var isHovered = false
-        private val modelWidget: ModelWidget
-        
+        private lateinit var modelWidget: ModelWidget
+
         init {
             // Create RenderablePokemon for model widget
             val species = PokemonSpecies.getByIdentifier(pokemon.species)
-            val form = pokemon.getFormData()
-            
-            val renderablePokemon = if (species != null && form != null) {
-                val aspects = mutableSetOf(form.name)
+
+            modelWidget = if (species != null) {
+                val form = pokemon.getFormData()
+                val aspects = mutableSetOf(form?.name ?: "default")
                 if (pokemon.shiny) aspects.add("shiny")
-                
-                RenderablePokemon(
+
+                val renderablePokemon = RenderablePokemon(
                     species = species,
                     aspects = aspects
                 )
-            } else {
-                null
-            }
-            
-            modelWidget = if (renderablePokemon != null) {
+
                 ModelWidget(
                     pX = x + 5,
                     pY = y + 5,
@@ -219,29 +215,33 @@ class TowerPokemonSelectionScreen(
                     playCryOnClick = false
                 )
             } else {
+                // Fallback: afficher un Pokémon par défaut au lieu d'un aléatoire
+                val fallbackSpecies = PokemonSpecies.getByIdentifier(cobblemonResource("bulbasaur")) ?: PokemonSpecies.random()
                 ModelWidget(
                     pX = x + 5,
                     pY = y + 5,
                     pWidth = SLOT_SIZE - 10,
                     pHeight = SLOT_SIZE - 10,
-                    pokemon = RenderablePokemon(PokemonSpecies.random(), setOf()),
-                    baseScale = 1.8F
+                    pokemon = RenderablePokemon(fallbackSpecies, setOf()),
+                    baseScale = 1.8F,
+                    rotationY = -15F,
+                    playCryOnClick = false
                 )
             }
         }
-        
+
         fun updateSelection(selected: Set<Int>) {
             isSelected = selected.contains(index)
         }
-        
+
         override fun renderWidget(context: GuiGraphics, mouseX: Int, mouseY: Int, delta: Float) {
             val matrices = context.pose()
             isHovered = mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height
-            
+
             // Draw background
             val alpha = if (isHovered) 0.8F else if (isSelected) 0.6F else 0.4F
             context.fill(x, y, x + width, y + height, (alpha * 255).toInt() shl 24 or 0x333333)
-            
+
             // Border
             val borderColor = when {
                 isSelected -> 0xFF00FF00.toInt() // Green
@@ -252,10 +252,10 @@ class TowerPokemonSelectionScreen(
             context.fill(x, y + height - 1, x + width, y + height, borderColor)
             context.fill(x, y, x + 1, y + height, borderColor)
             context.fill(x + width - 1, y, x + width, y + height, borderColor)
-            
+
             // Render Pokemon model
             modelWidget.render(context, mouseX, mouseY, delta)
-            
+
             // Render name
             drawScaledText(
                 context = context,
@@ -266,7 +266,7 @@ class TowerPokemonSelectionScreen(
                 scale = 0.5F,
                 shadow = true
             )
-            
+
             // Selection indicator
             if (isSelected) {
                 drawScaledText(
@@ -279,43 +279,43 @@ class TowerPokemonSelectionScreen(
                     shadow = true
                 )
             }
-            
+
             // Render tooltip when hovering
             if (isHovered) {
                 renderTooltip(context, mouseX, mouseY)
             }
         }
-        
+
         /**
          * Renders a detailed tooltip showing stats, moves, ability, and held item.
          */
         private fun renderTooltip(context: GuiGraphics, mouseX: Int, mouseY: Int) {
             val matrices = context.pose()
-            
+
             // Push matrix and translate forward in z to render above everything else
             matrices.pushPose()
             matrices.translate(0.0, 0.0, 400.0)
-            
+
             val tooltipX = x + SLOT_SIZE + 5
             val tooltipY = y
             val tooltipWidth = 140
             val lineHeight = 10
-            
+
             // Calculate tooltip height based on content
             val moveCount = pokemon.moves.size
             val tooltipHeight = 90 + (moveCount * lineHeight)
-            
+
             // Draw tooltip background
             context.fill(tooltipX, tooltipY, tooltipX + tooltipWidth, tooltipY + tooltipHeight, 0xE0000000.toInt())
-            
+
             // Draw border
             context.fill(tooltipX, tooltipY, tooltipX + tooltipWidth, tooltipY + 1, 0xFFFFFFFF.toInt())
             context.fill(tooltipX, tooltipY + tooltipHeight - 1, tooltipX + tooltipWidth, tooltipY + tooltipHeight, 0xFFFFFFFF.toInt())
-context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFFFFF.toInt())
+            context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFFFFF.toInt())
             context.fill(tooltipX + tooltipWidth - 1, tooltipY, tooltipX + tooltipWidth, tooltipY + tooltipHeight, 0xFFFFFFFF.toInt())
-            
+
             var currentY = tooltipY + 5.0
-            
+
             // Title: Pokemon name and level
             drawScaledText(
                 context = context,
@@ -327,7 +327,7 @@ context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFF
                 shadow = true
             )
             currentY += lineHeight + 2
-            
+
             // Stats section
             drawScaledText(
                 context = context,
@@ -339,7 +339,7 @@ context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFF
                 shadow = true
             )
             currentY += lineHeight
-            
+
             // HP, ATK, DEF
             drawScaledText(
                 context = context,
@@ -351,7 +351,7 @@ context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFF
                 shadow = true
             )
             currentY += lineHeight - 2
-            
+
             // SP.ATK, SP.DEF, SPD
             drawScaledText(
                 context = context,
@@ -363,7 +363,7 @@ context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFF
                 shadow = true
             )
             currentY += lineHeight + 2
-            
+
             // Ability
             drawScaledText(
                 context = context,
@@ -375,7 +375,7 @@ context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFF
                 shadow = true
             )
             currentY += lineHeight + 2
-            
+
             // Moves section
             drawScaledText(
                 context = context,
@@ -387,10 +387,10 @@ context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFF
                 shadow = true
             )
             currentY += lineHeight
-            
+
             pokemon.moves.forEach { moveId ->
-                val moveName = moveId.path.replace("_", " ").split(" ").joinToString(" ") { 
-                    it.replaceFirstChar { c -> c.uppercase() } 
+                val moveName = moveId.path.replace("_", " ").split(" ").joinToString(" ") {
+                    it.replaceFirstChar { c -> c.uppercase() }
                 }
                 drawScaledText(
                     context = context,
@@ -403,11 +403,11 @@ context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFF
                 )
                 currentY += lineHeight - 1
             }
-            
+
             // Held item (if any)
             if (pokemon.heldItem != null) {
                 currentY += 2
-                val itemName = pokemon.heldItem!!.split(":").lastOrNull()?.replace("_", " ")?.split(" ")?.joinToString(" ") { 
+                val itemName = pokemon.heldItem!!.split(":").lastOrNull()?.replace("_", " ")?.split(" ")?.joinToString(" ") {
                     it.replaceFirstChar { c -> c.uppercase() }
                 } ?: pokemon.heldItem!!
                 drawScaledText(
@@ -420,15 +420,15 @@ context.fill(tooltipX, tooltipY, tooltipX + 1, tooltipY + tooltipHeight, 0xFFFFF
                     shadow = true
                 )
             }
-            
+
             // Restore matrix state
             matrices.popPose()
         }
-        
+
         override fun onClick(mouseX: Double, mouseY: Double) {
             onSelect(index)
         }
-        
+
         override fun updateWidgetNarration(builder: NarrationElementOutput) {
             builder.add(net.minecraft.client.gui.narration.NarratedElementType.TITLE, pokemon.getDisplayName())
         }

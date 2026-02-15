@@ -1,12 +1,16 @@
 {
-    "id": "tower_lobby_attendant",
-    "hitbox": "player",
-    "names": [
-        "§6Tower Attendant"
-    ],
-    "interaction": {
-        "type": "dialogue",
-        "dialogue": "cobblemon:tower_lobby_attendant"
-    },
-    "canDespawn": false
+  "id": "tower_lobby_attendant",
+  "hitbox": "player",
+  "model": "cobblemon:lass",
+  "aspects": [
+    "shopkeeper-custom"
+  ],
+  "names": [
+    "§6Tower Attendant"
+  ],
+  "interaction": {
+    "type": "dialogue",
+    "dialogue": "cobblemon:tower_lobby_attendant"
+  },
+  "canDespawn": false
 }

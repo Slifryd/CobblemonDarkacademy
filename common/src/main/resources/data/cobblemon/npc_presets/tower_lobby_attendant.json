@@ -1,9 +1,9 @@
 {
     "id": "tower_lobby_attendant",
     "displayName": "§6Tower Attendant",
-    "aspects": [
-        "male"
-    ],
+    "model": "cobblemon:ash",
+
+
     "interaction": {
         "type": "dialogue",
         "dialogue": "cobblemon:tower_lobby_attendant"

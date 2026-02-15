@@ -75,25 +75,27 @@ object TowerTrainerSpawner {
             // Position NPC at trainer spawn location
             val spawnPos = arena.trainerSpawn
             npc.moveTo(spawnPos.x.toDouble(), spawnPos.y.toDouble(), spawnPos.z.toDouble(), 180f, 0f) // Face player spawn
-            
+
             // Configure NPC appearance and class
             val npcClass = createTowerTrainerClass(arenaNumber, difficulty)
-            
+
             // Create party provider with our generated team
-            // This is the proper way to assign party to NPCs in Cobblemon
             val partyProvider = createPartyProvider(team)
-            
-            // Assign the party provider to the NPC Class
-            // NPCEntity.initialize() will use this provider to populate the NPC's actual party
+
+// Assign the party provider to the NPC Class
             npcClass.party = partyProvider
-            
-            // Assign interaction handling to initiate battle
+
+// Assign interaction handling to initiate battle
             npcClass.interaction = createInteraction()
-            
+
+// IMPORTANT: Assign npc class BEFORE initializing
             npc.npc = npcClass
-            
-            // Initialize the NPC (this will call the party provider)
+
+// Initialize the NPC (this will call the party provider and load appearance)
             npc.initialize(difficulty.pokemonLevelMin)
+
+// Force dimensions refresh to apply appearance
+            npc.refreshDimensions()
             
             // The NPC will automatically be challengeable via right-click
             // since it has a party assigned - Cobblemon handles this automatically
