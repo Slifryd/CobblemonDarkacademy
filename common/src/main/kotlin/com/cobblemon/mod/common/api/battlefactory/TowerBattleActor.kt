@@ -27,7 +27,7 @@ class TowerBattleActor(
     override val initialPos = npc.position().add(0.0, 0.2, 0.0).add(npc.lookAngle.scale(2.0))
 
     private var sendingOutStartTime: Long = 0L
-    private var lastRequestTurn: Int = -1
+    private var lastRequestTurnKey: String = ""
     private var requestRetryCount: Int = 0
     private val repairedTurns = mutableSetOf<Int>()
 
@@ -71,21 +71,47 @@ class TowerBattleActor(
 
     override fun onChoiceRequested() {
         val currentTurn = battle.turn
-        Cobblemon.LOGGER.info("[TOWER DEBUG] onChoiceRequested called for turn $currentTurn")
+        val isForceSwitch = request?.forceSwitch?.any { it } ?: false
+        val isWaitRequest = request?.wait ?: false
+
+        // Detect when Showdown sends a "move" request but we have no active pokemon
+        // This happens when Showdown rejected our switch choice (active pokemon is dead)
+        // and sends a fallback move request - treat this as a switch retry
+        val activeIsDeadInShowdown = request?.side?.pokemon?.any {
+            it.active && (it.condition.contains("fnt") || it.condition.startsWith("0 ") || it.condition == "0")
+        } ?: false
+
+        val effectiveTurnKey = if (!isForceSwitch && activeIsDeadInShowdown) {
+            // Showdown sent a move request but active pokemon is dead - treat as switch retry
+            Cobblemon.LOGGER.warn("[TOWER DEBUG] Move request but active Pokemon is dead - treating as switch retry")
+            "$currentTurn-switch"
+        } else {
+            "$currentTurn-${if (isForceSwitch) "switch" else "move"}"
+        }
+
+        Cobblemon.LOGGER.info("[TOWER DEBUG] onChoiceRequested called for turn $currentTurn (forceSwitch=$isForceSwitch, activeIsDeadInShowdown=$activeIsDeadInShowdown, turnKey=$effectiveTurnKey)")
 
         if (repairedTurns.contains(currentTurn)) {
             Cobblemon.LOGGER.info("[TOWER DEBUG] Turn $currentTurn already repaired - skipping retry check")
-        } else if (currentTurn == lastRequestTurn) {
+        } else if (effectiveTurnKey == lastRequestTurnKey) {
             requestRetryCount++
-            Cobblemon.LOGGER.warn("[TOWER DEBUG] This is retry #$requestRetryCount for turn $currentTurn")
+            Cobblemon.LOGGER.warn("[TOWER DEBUG] This is retry #$requestRetryCount for $effectiveTurnKey")
 
-            if (requestRetryCount >= 1) {
-                forcePlayerVictory("Showdown rejected choice $requestRetryCount time(s) on turn $currentTurn")
+            val hasAlivePokemon = pokemonList.any { it.health > 0 }
+            Cobblemon.LOGGER.warn("[TOWER DEBUG] Retry analysis: hasAlivePokemon=$hasAlivePokemon")
+
+            if (requestRetryCount >= 1 && !hasAlivePokemon) {
+                forcePlayerVictory("All NPC Pokemon dead after retry on $effectiveTurnKey")
+                return
+            } else if (requestRetryCount >= 2) {
+                forcePlayerVictory("Too many retries ($requestRetryCount) on $effectiveTurnKey")
                 return
             }
+            Cobblemon.LOGGER.warn("[TOWER DEBUG] Retry but NPC still has alive Pokemon - letting battle continue")
         } else {
-            lastRequestTurn = currentTurn
+            lastRequestTurnKey = effectiveTurnKey
             requestRetryCount = 0
+            Cobblemon.LOGGER.info("[TOWER DEBUG] New request type: $effectiveTurnKey")
         }
 
         syncHealthFromRequest()
@@ -160,8 +186,6 @@ class TowerBattleActor(
         val expectedUUID = requestActiveUUIDs.first()
         val currentUUID = activePokemon.firstOrNull()?.battlePokemon?.uuid
 
-        // currentUUID == null est un état transitoire normal (slot vide pendant un switch)
-        // Ne pas traiter ça comme un desync
         if (currentUUID == null) {
             Cobblemon.LOGGER.info("[TOWER DEBUG] activePokemon slot is null - normal transitional state, skipping desync check")
             return
