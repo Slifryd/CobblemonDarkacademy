@@ -17,7 +17,6 @@ import com.cobblemon.mod.common.net.messages.client.battle.BattleQueueRequestPac
 
 /**
  * Custom battle actor for Tower Trainers that extends NPCBattleActor.
- * This simulates a "Player-like" actor for UI purposes, similar to how RadGym handles gym trainers.
  */
 class TowerBattleActor(
     npc: NPCEntity,
@@ -30,15 +29,13 @@ class TowerBattleActor(
     private var sendingOutStartTime: Long = 0L
     private var lastRequestTurn: Int = -1
     private var requestRetryCount: Int = 0
+    private val repairedTurns = mutableSetOf<Int>()
 
     init {
         npc.addTag("TowerDebug")
         Cobblemon.LOGGER.info("[TOWER DEBUG] Tagged NPC ${npc.uuid} for debug logging.")
     }
 
-    /**
-     * Syncs health from Showdown request to local Pokemon
-     */
     private fun syncHealthFromRequest() {
         request?.side?.pokemon?.forEach { showdownPokemon ->
             val localPokemon = pokemonList.find { it.uuid == showdownPokemon.uuid }
@@ -59,25 +56,54 @@ class TowerBattleActor(
         }
     }
 
-    /**
-     * Intercept when choice is requested to sync health BEFORE AI makes decisions
-     */
-    override fun onChoiceRequested() {
-        Cobblemon.LOGGER.info("[TOWER DEBUG] onChoiceRequested called for turn ${battle.turn}")
+    private fun forcePlayerVictory(reason: String) {
+        Cobblemon.LOGGER.error("[TOWER DEBUG] Forcing player victory - reason: $reason")
+        pokemonList.forEach { pokemon ->
+            pokemon.effectedPokemon.currentHealth = 0
+        }
+        battle.end()
+        val playerActor = battle.actors.filterIsInstance<com.cobblemon.mod.common.battles.actor.PlayerBattleActor>().firstOrNull()
+        playerActor?.entity?.let { player ->
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal("§6[Tower] Battle desync detected - Victory awarded"))
+            BattleFactoryTowerManager.onArenaVictory(player)
+        }
+    }
 
-        // Track if this is a retry (same turn, multiple requests)
-        if (battle.turn == lastRequestTurn) {
+    override fun onChoiceRequested() {
+        val currentTurn = battle.turn
+        Cobblemon.LOGGER.info("[TOWER DEBUG] onChoiceRequested called for turn $currentTurn")
+
+        if (repairedTurns.contains(currentTurn)) {
+            Cobblemon.LOGGER.info("[TOWER DEBUG] Turn $currentTurn already repaired - skipping retry check")
+        } else if (currentTurn == lastRequestTurn) {
             requestRetryCount++
-            Cobblemon.LOGGER.warn("[TOWER DEBUG] This is retry #$requestRetryCount for turn ${battle.turn}")
+            Cobblemon.LOGGER.warn("[TOWER DEBUG] This is retry #$requestRetryCount for turn $currentTurn")
+
+            if (requestRetryCount >= 1) {
+                forcePlayerVictory("Showdown rejected choice $requestRetryCount time(s) on turn $currentTurn")
+                return
+            }
         } else {
-            lastRequestTurn = battle.turn
+            lastRequestTurn = currentTurn
             requestRetryCount = 0
         }
 
-        // Sync health before AI decision
         syncHealthFromRequest()
 
-        // Log available Pokemon before decision
+        val deadInActive = activePokemon.filter { activeSlot ->
+            val pokemon = activeSlot.battlePokemon
+            pokemon != null && pokemon.health <= 0
+        }
+
+        if (deadInActive.isNotEmpty()) {
+            Cobblemon.LOGGER.warn("[TOWER DEBUG] Cleaning up ${deadInActive.size} dead Pokemon from activePokemon list")
+            deadInActive.forEach { deadSlot ->
+                deadSlot.battlePokemon?.entity?.discard()
+                Cobblemon.LOGGER.info("[TOWER DEBUG] Removed dead ${deadSlot.battlePokemon?.getName()} from active slot")
+            }
+            activePokemon.removeAll(deadInActive)
+        }
+
         Cobblemon.LOGGER.info("[TOWER DEBUG] Available Pokemon for switch:")
         pokemonList.forEachIndexed { index, pokemon ->
             val showdownData = request?.side?.pokemon?.find { it.uuid == pokemon.uuid }
@@ -85,32 +111,15 @@ class TowerBattleActor(
             Cobblemon.LOGGER.info("[TOWER DEBUG]   [$index] ${pokemon.effectedPokemon.species.name}: HP=${pokemon.health}, Showdown=${showdownData?.condition ?: "N/A"}, ShowdownActive=${showdownData?.active ?: false}, InActiveList=$isInActivePokemon")
         }
 
-        // If this is a retry and we only have dead Pokemon left, end the battle
-        if (requestRetryCount > 2) {
-            val allDead = pokemonList.all { it.health <= 0 }
-            if (allDead) {
-                Cobblemon.LOGGER.error("[TOWER DEBUG] All Pokemon dead after multiple retries - ending battle")
-                battle.end()
-                val playerActor = battle.actors.filterIsInstance<com.cobblemon.mod.common.battles.actor.PlayerBattleActor>().firstOrNull()
-                playerActor?.entity?.let { player ->
-                    BattleFactoryTowerManager.onArenaVictory(player)
-                }
-                return
-            }
-        }
-
-        // Now let the parent class make decisions with correct health values
         super.onChoiceRequested()
     }
 
     override fun sendUpdate(packet: NetworkPacket<*>) {
-        // CRITICAL: Sync health FIRST before calling super.sendUpdate which triggers onChoiceRequested
         if (packet is BattleQueueRequestPacket) {
             val requestSideId = packet.request.side?.id
             val mySideId = if (getSide() == battle.side1) "p1" else "p2"
 
             if (requestSideId == mySideId) {
-                // Sync health BEFORE anything else
                 packet.request.side?.pokemon?.forEach { showdownPokemon ->
                     val localPokemon = pokemonList.find { it.uuid == showdownPokemon.uuid }
                     if (localPokemon != null) {
@@ -151,7 +160,12 @@ class TowerBattleActor(
         val expectedUUID = requestActiveUUIDs.first()
         val currentUUID = activePokemon.firstOrNull()?.battlePokemon?.uuid
 
-        if (currentUUID == null && battle.turn == 0) return
+        // currentUUID == null est un état transitoire normal (slot vide pendant un switch)
+        // Ne pas traiter ça comme un desync
+        if (currentUUID == null) {
+            Cobblemon.LOGGER.info("[TOWER DEBUG] activePokemon slot is null - normal transitional state, skipping desync check")
+            return
+        }
 
         if (expectedUUID != currentUUID) {
             Cobblemon.LOGGER.warn("[TOWER DEBUG] DESYNC DETECTED! Showdown expects $expectedUUID but we have $currentUUID")
@@ -162,7 +176,6 @@ class TowerBattleActor(
                 val correctPokemon = pokemonList.find { it.uuid == expectedUUID }
 
                 if (correctPokemon != null) {
-                    // cleanup old
                     activePokemon.firstOrNull()?.battlePokemon?.entity?.discard()
 
                     if (activePokemon.isNotEmpty()) {
@@ -192,6 +205,10 @@ class TowerBattleActor(
 
                     correctPokemon.sendUpdate()
                     mustChoose = true
+
+                    repairedTurns.add(battle.turn)
+                    Cobblemon.LOGGER.info("[TOWER DEBUG] Marked turn ${battle.turn} as repaired")
+
                     onChoiceRequested()
 
                     val newCurrent = activePokemon.firstOrNull()?.battlePokemon?.uuid
@@ -205,12 +222,7 @@ class TowerBattleActor(
             }
 
             if (!repaired) {
-                Cobblemon.LOGGER.error("[TOWER DEBUG] UNRECOVERABLE DESYNC -> Forcing battle end")
-                battle.end()
-                val playerActor = battle.actors.filterIsInstance<com.cobblemon.mod.common.battles.actor.PlayerBattleActor>().firstOrNull()
-                playerActor?.entity?.let { player ->
-                    BattleFactoryTowerManager.onArenaVictory(player)
-                }
+                forcePlayerVictory("Unrecoverable desync on turn ${battle.turn}")
                 return
             }
 
