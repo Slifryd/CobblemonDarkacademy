@@ -72,17 +72,11 @@ class TowerBattleActor(
     override fun onChoiceRequested() {
         val currentTurn = battle.turn
         val isForceSwitch = request?.forceSwitch?.any { it } ?: false
-        val isWaitRequest = request?.wait ?: false
-
-        // Detect when Showdown sends a "move" request but we have no active pokemon
-        // This happens when Showdown rejected our switch choice (active pokemon is dead)
-        // and sends a fallback move request - treat this as a switch retry
         val activeIsDeadInShowdown = request?.side?.pokemon?.any {
             it.active && (it.condition.contains("fnt") || it.condition.startsWith("0 ") || it.condition == "0")
         } ?: false
 
         val effectiveTurnKey = if (!isForceSwitch && activeIsDeadInShowdown) {
-            // Showdown sent a move request but active pokemon is dead - treat as switch retry
             Cobblemon.LOGGER.warn("[TOWER DEBUG] Move request but active Pokemon is dead - treating as switch retry")
             "$currentTurn-switch"
         } else {
@@ -116,20 +110,9 @@ class TowerBattleActor(
 
         syncHealthFromRequest()
 
-        val deadInActive = activePokemon.filter { activeSlot ->
-            val pokemon = activeSlot.battlePokemon
-            pokemon != null && pokemon.health <= 0
-        }
-
-        if (deadInActive.isNotEmpty()) {
-            Cobblemon.LOGGER.warn("[TOWER DEBUG] Cleaning up ${deadInActive.size} dead Pokemon from activePokemon list")
-            deadInActive.forEach { deadSlot ->
-                deadSlot.battlePokemon?.entity?.discard()
-                Cobblemon.LOGGER.info("[TOWER DEBUG] Removed dead ${deadSlot.battlePokemon?.getName()} from active slot")
-            }
-            activePokemon.removeAll(deadInActive)
-        }
-
+        // CRITICAL: Do NOT remove dead pokemon from activePokemon here
+        // super.onChoiceRequested() needs activePokemon to be populated to iterate
+        // Only log the state for debugging
         Cobblemon.LOGGER.info("[TOWER DEBUG] Available Pokemon for switch:")
         pokemonList.forEachIndexed { index, pokemon ->
             val showdownData = request?.side?.pokemon?.find { it.uuid == pokemon.uuid }
